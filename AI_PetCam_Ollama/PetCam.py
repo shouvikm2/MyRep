@@ -7,11 +7,28 @@ import cv2
 import threading
 import sys
 
-# --- Default Configuration ---
-DEFAULT_OLLAMA_URL = "http://localhost:11434/api/generate"
-DEFAULT_MODEL = "llama3.2-vision"
-DEFAULT_PROMPT = "You are a hamster behavior expert. Look at this image. Is the hamster: 1. On the wheel? 2. Eating? 3. Sleeping? 4. Climbing? Provide a 1-sentence summary."
-DEFAULT_INTERVAL = 15
+# Configuration
+API_URL = "http://localhost:11434/api/generate"
+VISION_MODEL = "llama3.2-vision"
+MY_PROMPT = """You are a meticulous AI visual analyst. Your task is to observe a hamster and report its activity with high accuracy.
+
+**Step 1: Analyze the Scene (Internal Monologue).**
+First, describe what you see in the image. Is the hamster present? Where is it located in the cage? What object is it nearest to? The cage contains a white playing bowl in which the hamster sits when it wants to be picked up by its owner, a red sand bath, a blue water bottle and feeder setup, a seesaw, a tunnel, somne small toys and a white mouse-shaped house.
+
+**Step 2: Determine the Activity (Internal Monologue).**
+Based on the hamster's posture and location from Step 1, determine its most likely activity (e.g., eating, drinking, sleeping, running, climbing, bathing, exploring, or wanting to play and interact with owner).
+
+**Step 3: Formulate the Final Summary.**
+Synthesize your analysis from the previous steps into a single, concise summary sentence.
+
+**Output Rules:**
+- Your final output MUST be only the single summary sentence from Step 3.
+- If the hamster is interacting with a known object, mention it.
+- If the hamster is not clearly visible or its activity cannot be determined, your summary must be: "The hamster's activity is currently unclear."
+- Do not guess or invent details. Stick strictly to visual evidence.
+
+Begin your analysis."""
+DEFAULT_INTERVAL = 10  # seconds between checks
 
 def get_hamster_status(image_data: str, ollama_url: str, model: str, prompt: str) -> str | None:
     """
@@ -55,8 +72,25 @@ def ai_worker(ollama_url: str, model: str, prompt: str, interval: int, shared_st
                 frame_to_process = shared_state['latest_frame'].copy()
 
         if frame_to_process is not None:
-            # 1. Encode the captured frame for the API
-            _, buffer = cv2.imencode('.jpg', frame_to_process)
+            # Add a message to show that analysis is starting
+            print(f"[{time.strftime('%H:%M:%S')}] Sending frame to AI for analysis...")
+
+            # --- Performance Optimization: Resize & Compress Image ---
+            # Vision models don't need high-res images. Resizing reduces data size and speeds up analysis.
+            max_dim = 1024
+            h, w, _ = frame_to_process.shape
+            if h > max_dim or w > max_dim:
+                if h > w:
+                    new_h, new_w = max_dim, int(w * (max_dim / h))
+                else:
+                    new_h, new_w = int(h * (max_dim / w)), max_dim
+                resized_frame = cv2.resize(frame_to_process, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            else:
+                resized_frame = frame_to_process
+
+            # 1. Encode the resized frame with lower quality to further reduce size. 85 is a good balance.
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
+            _, buffer = cv2.imencode('.jpg', resized_frame, encode_param)
             img_base64 = base64.b64encode(buffer).decode('utf-8')
 
             # 2. Get AI analysis (this is a blocking call, but it's in a separate thread)
@@ -91,6 +125,13 @@ def main(stream_url: str, ollama_url: str, model: str, prompt: str, interval: in
     window_name = "Hamster Cam Feed (press 'q' to quit)"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
+    # --- Video Capture Setup ---
+    cap = cv2.VideoCapture(stream_url)
+    if not cap.isOpened():
+        print(f"Error: Could not open video stream at {stream_url}", file=sys.stderr)
+        print("Please check the URL and ensure the camera is streaming.", file=sys.stderr)
+        return
+
     # --- Threading Setup ---
     shared_state = {
         'latest_frame': None,
@@ -110,17 +151,15 @@ def main(stream_url: str, ollama_url: str, model: str, prompt: str, interval: in
 
     while True:
         try:
-            # 1. Grab frame data from phone
-            img_resp = requests.get(stream_url, timeout=10)
-            img_resp.raise_for_status()
+            # 1. Grab frame from the video stream using OpenCV
+            ret, frame = cap.read()
 
-            # Decode image for display
-            img_arr = np.frombuffer(img_resp.content, np.uint8)
-            frame = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
-
-            if frame is None:
-                print("Could not decode image from stream. Is the URL correct and the stream active?", file=sys.stderr)
-                time.sleep(5)
+            if not ret:
+                print("Stream ended or failed to grab frame. Attempting to reconnect...", file=sys.stderr)
+                # Release the old capture object and try to create a new one
+                cap.release()
+                time.sleep(2) # Wait a moment before reconnecting
+                cap = cv2.VideoCapture(stream_url)
                 continue
 
             # 2. Safely update the latest frame for the worker and get the latest status for display
@@ -142,10 +181,6 @@ def main(stream_url: str, ollama_url: str, model: str, prompt: str, interval: in
                 stop_event.set()  # Signal the worker thread to stop
                 break
 
-        except requests.exceptions.RequestException as e:
-            print(f"Error fetching image from stream: {e}", file=sys.stderr)
-            print("Retrying in 15 seconds...", file=sys.stderr)
-            time.sleep(15)
         except KeyboardInterrupt:
             stop_event.set()
             print("\nExiting Hamster Cam.")
@@ -154,15 +189,17 @@ def main(stream_url: str, ollama_url: str, model: str, prompt: str, interval: in
             print(f"An unexpected error occurred in the main loop: {e}", file=sys.stderr)
             time.sleep(interval)
 
+    # Clean up the capture object
+    cap.release()
     # Clean up OpenCV windows
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="An AI-powered camera to monitor your pet.")
     parser.add_argument("stream_url", help="The URL of the IP camera stream (e.g., http://192.168.1.109:8080/video).")
-    parser.add_argument("--ollama-url", default=DEFAULT_OLLAMA_URL, help=f"The Ollama API URL (default: {DEFAULT_OLLAMA_URL}).")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"The vision model to use (default: {DEFAULT_MODEL}).")
-    parser.add_argument("--prompt", default=DEFAULT_PROMPT, help="The prompt for the AI model.")
+    parser.add_argument("--ollama-url", default=API_URL, help=f"The Ollama API URL (default: {API_URL}).")
+    parser.add_argument("--model", default=VISION_MODEL, help=f"The vision model to use (default: {VISION_MODEL}).")
+    parser.add_argument("--prompt", default=MY_PROMPT, help="The prompt for the AI model.")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL, help=f"The interval in seconds between checks (default: {DEFAULT_INTERVAL}).")
 
     args = parser.parse_args()
