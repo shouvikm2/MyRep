@@ -5,13 +5,13 @@ Senior Systems Architect | Technology Lead | Budding Edge AI Specialist
 
 
 Category	Skills & Tools: 
-Edge Hardware	NVIDIA Jetson Orin Nano, ARM Cortex, RISC-V
-AI/ML	Llama 3.x, VLM (Llava/Moondream), TensorRT, Model Quantization (INT4/INT8)
-Architecture	Cloud-to-Edge Pipelines, Sensor Fusion, System Design, IaaS/IaC
-Development	Python (PyTorch/OpenCV), C++, Linux (L4T), Docker, FastAPI
-Workstation	RTX 4060 i7 Dev Server
+-Edge Hardware	NVIDIA Jetson Orin Nano, ARM Cortex, RISC-V
+-AI/ML	Llama 3.x, VLM (Llava/Moondream), TensorRT, Model Quantization (INT4/INT8)
+-Architecture	Cloud-to-Edge Pipelines, Sensor Fusion, System Design, IaaS/IaC
+-Development	Python (PyTorch/OpenCV), C++, Linux (L4T), Docker, FastAPI
+-Workstation	RTX 4060 i7 Dev Server
 
-Active Projects (The "Physical AI" Roadmap)
+* Active Projects (The "Physical AI" Roadmap)
 1. Hamster AI Cam: Local Vision-Language Pipeline
 Goal: 100% air-gapped behavioral analysis for a physical environment.
 
