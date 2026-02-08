@@ -6,7 +6,7 @@ Category	Skills & Tools:
 - Development	Python (PyTorch/OpenCV), Linux (L4T), Docker, FastAPI
 - Workstation	RTX 4060 i7 Dev Server
 
-* Active Projects (The "Physical AI" Roadmap)
+* Active Projects (The "Physical AI" Roadmap) -- 
 1. Personal AI Cam: Local Vision-Language Pipeline
 Goal: 100% air-gapped behavioral analysis for a physical environment.
 Stack: Ollama llava-phi3, NVIDIA Jetson Orin.
