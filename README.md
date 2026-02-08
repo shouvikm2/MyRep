@@ -1,7 +1,7 @@
 Architecting the Physical AI Frontier
 Category	Skills & Tools: 
 - Edge Hardware	NVIDIA Jetson Orin Nano,
-- llava-phi3 - for vision
+- Ollama llava-phi3 - for vision
 - Architecture	Cloud-to-Edge Pipelines, Sensor Fusion, System Design, IaaS/IaC
 - Development	Python (PyTorch/OpenCV), Linux (L4T), Docker, FastAPI
 - Workstation	RTX 4060 i7 Dev Server
