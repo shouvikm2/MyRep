@@ -1,0 +1,23 @@
+# Virtual environments
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Testing
+.pytest_cache/
+_test_*.json
+
+# IDE
+.vscode/
+.idea/
+
+# Recordings (local captures)
+recordings/
+
+# OS
+.DS_Store
+Thumbs.db

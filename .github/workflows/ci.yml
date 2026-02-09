@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Use headless OpenCV in CI (no GUI/display server)
+          pip install opencv-python-headless numpy requests
+          pip install flake8 pytest
+
+      - name: Lint with flake8
+        run: flake8 SmartCam.py tests/
+
+      - name: Run tests
+        run: pytest tests/ -v
