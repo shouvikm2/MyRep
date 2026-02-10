@@ -724,7 +724,9 @@ if __name__ == "__main__":
                         help="Memory zone label for this camera view (default: 'default'). Use named zones for multi-cam.")
     parser.add_argument("--memory-context", type=int, default=3,
                         help="Number of past observations to inject into prompt (default: 3)")
-    parser.add_argument("--vosk-model", type=str, default=None,
+    parser.add_argument("--vosk-model", type=str,
+                        default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                             "vosk-model-small-en-us-0.15"),
                         help="Path to vosk model dir for voice commands. Download from alphacephei.com/vosk/models")
     parser.add_argument("--record-dir", type=str, default="./recordings",
                         help="Directory to save recordings (default: ./recordings). Toggle with 'r' key or voice.")
