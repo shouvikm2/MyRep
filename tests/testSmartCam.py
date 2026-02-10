@@ -6,7 +6,7 @@ import sys
 
 # Add parent directory so SmartCam can be imported from tests/
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-import SmartCam
+import SmartCam  # noqa: E402
 
 
 class TestGetAIAnalysis(unittest.TestCase):
