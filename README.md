@@ -22,7 +22,7 @@ A real-time AI camera system that uses a local Ollama vision model to continuous
 ## Hardware Target
 
 - **Development / Testing**: Any Windows or Linux PC with a webcam
-- **Production**: NVIDIA Jetson Orin 8GB (unified memory, ~3.7GB total planned usage)
+- **Production**: NVIDIA Jetson Orin 8GB unified memory
 
 ---
 
