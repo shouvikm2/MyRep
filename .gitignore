@@ -22,3 +22,12 @@ recordings/
 .DS_Store
 Thumbs.db
 *.zip
+*.mdl
+*.conf
+*.int
+*.fst
+*.dubm
+*.ie
+*.mat
+*.stats
+vosk-model-small-en-us-0.15/README

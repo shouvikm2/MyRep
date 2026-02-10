@@ -362,7 +362,8 @@ def stop_recording(writer: cv2.VideoWriter | None):
     print(f"[{time.strftime('%H:%M:%S')}] Recording stopped.")
 
 
-def voice_listener(command_queue: queue.Queue, stop_event: threading.Event, vosk_model_path: str):
+def voice_listener(command_queue: queue.Queue, stop_event: threading.Event, vosk_model_path: str,
+                   ready_event: threading.Event | None = None):
     """Listens to microphone and pushes recognized commands to command_queue.
     Requires: pip install vosk pyaudio
     Model: download from https://alphacephei.com/vosk/models (e.g. vosk-model-small-en-us-0.15)
@@ -374,18 +375,42 @@ def voice_listener(command_queue: queue.Queue, stop_event: threading.Event, vosk
         print(f"Voice listener disabled ({e}). Run: pip install vosk pyaudio", file=sys.stderr)
         return
 
+    abs_model_path = os.path.abspath(vosk_model_path)
+    if not os.path.isdir(abs_model_path):
+        print(f"Voice listener disabled: model directory not found: {abs_model_path}", file=sys.stderr)
+        print("  Download a model from https://alphacephei.com/vosk/models and extract it.", file=sys.stderr)
+        return
+
     try:
-        model = vosk.Model(vosk_model_path)
+        model = vosk.Model(abs_model_path)
         rec = vosk.KaldiRecognizer(model, 16000)
         pa = pyaudio.PyAudio()
+
+        try:
+            dev_info = pa.get_default_input_device_info()
+            print(f"  Audio input device: {dev_info['name']}")
+        except IOError:
+            print("Voice listener disabled: no audio input device found.", file=sys.stderr)
+            if sys.platform == "win32":
+                print("  Hint: Check Windows Settings > Privacy > Microphone.", file=sys.stderr)
+            pa.terminate()
+            return
+
         stream = pa.open(format=pyaudio.paInt16, channels=1, rate=16000,
                          input=True, frames_per_buffer=8000)
         stream.start_stream()
+    except OSError as e:
+        print(f"Voice listener init failed (audio device): {e}", file=sys.stderr)
+        if sys.platform == "win32":
+            print("  Hint: Check Windows Settings > Privacy > Microphone.", file=sys.stderr)
+        return
     except Exception as e:
         print(f"Voice listener init failed: {e}", file=sys.stderr)
         return
 
     print("Voice listener started.")
+    if ready_event is not None:
+        ready_event.set()
     while not stop_event.is_set():
         try:
             data = stream.read(4000, exception_on_overflow=False)
@@ -426,6 +451,8 @@ def main(video_source: str | int, ollama_url: str, model: str, initial_prompt: s
     print(f" - HW accel: Jetson={'yes' if HW_CAPS['is_jetson'] else 'no'}"
           f" | GStreamer={'yes' if HW_CAPS['has_gstreamer'] else 'no'}"
           f" | CUDA-CV={'yes' if HW_CAPS['has_cuda_cv'] else 'no'}")
+    if vosk_model and not os.path.isdir(vosk_model):
+        print(f" *** WARNING: vosk model path '{os.path.abspath(vosk_model)}' does not exist!")
     print("-" * 30)
 
     memory = MemoryStore(memory_path) if memory_path else None
@@ -490,13 +517,22 @@ def main(video_source: str | int, ollama_url: str, model: str, initial_prompt: s
     )
     worker_thread.start()
 
+    voice_ready = threading.Event()
     if vosk_model:
         voice_thread = threading.Thread(
             target=voice_listener,
-            args=(command_queue, stop_event, vosk_model),
+            args=(command_queue, stop_event, vosk_model, voice_ready),
             daemon=True
         )
         voice_thread.start()
+        # Wait for voice listener to finish initializing before entering main loop
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if voice_ready.is_set() or not voice_thread.is_alive():
+                break
+            time.sleep(0.1)
+        if not voice_ready.is_set():
+            print("WARNING: Voice listener failed to start. Check errors above.", file=sys.stderr)
 
     if not headless:
         cv2.namedWindow("SmartCam (q to quit)", cv2.WINDOW_NORMAL)
