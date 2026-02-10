@@ -165,5 +165,3 @@ Main Thread (UI + capture + voice command dispatch)
 | Version | Features |
 |---------|----------|
 | **v1** (current) | SmartCam — AI vision, memory, voice I/O, recording |
-| **v1.1** | Dashcam + GPS antenna, GPS-derived memory zones |
-| **v2** | Lidar navigation, YOLO detection, temp/humidity sensors, voice summon |
