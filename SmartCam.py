@@ -174,6 +174,7 @@ def speak(text: str, piper_model: str | None = None):
                 _tts_process = aplay
             elif sys.platform == "win32":
                 _tts_busy.set()
+                
                 def _pyttsx3_speak(t: str):
                     try:
                         import pyttsx3
@@ -705,3 +706,4 @@ if __name__ == "__main__":
          args.motion_threshold, args.headless, args.enhance_video, args.timeout,
          args.denoise, args.piper_model, args.memory_path, args.zone, args.memory_context,
          args.record_dir, args.vosk_model)
+    
