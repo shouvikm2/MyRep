@@ -11,6 +11,7 @@ import queue
 import threading
 import sys
 import platform
+from collections import deque
 from datetime import datetime
 
 
@@ -38,7 +39,14 @@ CHECK_INTERVAL = 10  # seconds between periodic checks when no motion
 MOTION_THRESHOLD = 5000  # changed pixels to trigger motion-based analysis
 MEMORY_MAX_PER_ZONE = 100  # max stored observations per zone before pruning
 MOTION_DOWNSCALE = 2  # downscale factor for motion detection (saves CPU on ARM)
-JPEG_QUALITY = 50  # lower = smaller payload for VLM, 50 is indistinguishable at 480x360
+JPEG_QUALITY = 70  # lower = smaller payload for VLM, 70 balances detail vs size
+FRAME_BUFFER_SIZE = 5  # ring buffer for sharpest-frame selection at analysis time
+
+
+def _frame_sharpness(frame) -> float:
+    """Laplacian variance — higher means sharper. Used to pick best frame for VLM."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return cv2.Laplacian(gray, cv2.CV_64F).var()
 
 
 def _build_gstreamer_pipeline(source, width: int, height: int) -> str | None:
@@ -91,9 +99,20 @@ VOICE_COMMANDS = {
 }
 
 # --- TTS state ---
-_tts_process = None
-_tts_busy = threading.Event()  # tracks pyttsx3 speech on Windows
+_tts_processes: list = []  # all active TTS subprocesses (piper+aplay or espeak-ng)
+_tts_busy = threading.Event()  # set while TTS audio is playing (any platform)
 _tts_lock = threading.Lock()
+
+
+def stop_speaking():
+    """Interrupt any in-progress TTS output."""
+    with _tts_lock:
+        for proc in _tts_processes:
+            if proc and proc.poll() is None:
+                proc.terminate()
+        _tts_processes.clear()
+        _tts_busy.clear()
+
 
 # --- Analysis state ---
 analysis_lock = threading.Lock()
@@ -150,13 +169,12 @@ class MemoryStore:
 
 
 def speak(text: str, piper_model: str | None = None):
-    """Non-blocking TTS output. Skips if previous speech is still playing."""
-    global _tts_process
+    """Non-blocking TTS output. Interrupts any in-progress speech (barge-in)."""
+    stop_speaking()  # kill current speech before starting new
     with _tts_lock:
-        if (_tts_process and _tts_process.poll() is None) or _tts_busy.is_set():
-            return
         try:
             if piper_model:
+                _tts_busy.set()
                 piper = subprocess.Popen(
                     ['piper', '--model', piper_model, '--output_raw'],
                     stdin=subprocess.PIPE,
@@ -171,7 +189,12 @@ def speak(text: str, piper_model: str | None = None):
                 assert piper.stdin is not None
                 piper.stdin.write(text.encode('utf-8'))
                 piper.stdin.close()
-                _tts_process = aplay
+                _tts_processes.extend([piper, aplay])
+
+                def _monitor(proc):
+                    proc.wait()
+                    _tts_busy.clear()
+                threading.Thread(target=_monitor, args=(aplay,), daemon=True).start()
             elif sys.platform == "win32":
                 _tts_busy.set()
 
@@ -188,13 +211,22 @@ def speak(text: str, piper_model: str | None = None):
                         _tts_busy.clear()
                 threading.Thread(target=_pyttsx3_speak, args=(text,), daemon=True).start()
             else:
-                _tts_process = subprocess.Popen(
+                _tts_busy.set()
+                proc = subprocess.Popen(
                     ['espeak-ng', text],
                     stderr=subprocess.DEVNULL
                 )
+                _tts_processes.append(proc)
+
+                def _monitor(p):
+                    p.wait()
+                    _tts_busy.clear()
+                threading.Thread(target=_monitor, args=(proc,), daemon=True).start()
         except FileNotFoundError as e:
+            _tts_busy.clear()
             print(f"TTS binary not found ({e}). Response: {text}", file=sys.stderr)
         except Exception as e:
+            _tts_busy.clear()
             print(f"TTS error: {e}", file=sys.stderr)
 
 
@@ -323,8 +355,16 @@ def ai_worker(ollama_url: str, model: str, interval: int, motion_threshold: int,
                     if ctx:
                         prompt = f"{ctx}\n\n{base_prompt}"
 
+                # Pick sharpest frame from buffer for VLM
+                with shared_state['lock']:
+                    buffered = [f.copy() for f in shared_state['frame_buffer']]
+                if len(buffered) > 1:
+                    vlm_frame = max(buffered, key=_frame_sharpness)
+                else:
+                    vlm_frame = frame_to_process
+
                 encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
-                _, buffer = cv2.imencode('.jpg', frame_to_process, encode_param)
+                _, buffer = cv2.imencode('.jpg', vlm_frame, encode_param)
                 img_base64 = base64.b64encode(buffer.tobytes()).decode('utf-8')
 
                 analysis_thread = threading.Thread(
@@ -411,7 +451,24 @@ def voice_listener(command_queue: queue.Queue, stop_event: threading.Event, vosk
     print("Voice listener started.")
     if ready_event is not None:
         ready_event.set()
+    tts_was_active = False
     while not stop_event.is_set():
+        # Pause mic during TTS to prevent echo/self-hearing
+        if _tts_busy.is_set():
+            try:
+                stream.read(4000, exception_on_overflow=False)  # drain, discard
+            except Exception:
+                pass
+            tts_was_active = True
+            continue
+
+        # Cooldown after TTS ends — flush residual TTS audio from mic buffer
+        if tts_was_active:
+            tts_was_active = False
+            time.sleep(0.3)
+            rec.FinalResult()  # flush recognizer state
+            continue
+
         try:
             data = stream.read(4000, exception_on_overflow=False)
             if rec.AcceptWaveform(data):
@@ -505,6 +562,7 @@ def main(video_source: str | int, ollama_url: str, model: str, initial_prompt: s
         'lock': threading.Lock(),
         'motion_threshold': motion_threshold,
         'interval': interval,
+        'frame_buffer': deque(maxlen=FRAME_BUFFER_SIZE),
     }
     stop_event = threading.Event()
 
@@ -586,6 +644,7 @@ def main(video_source: str | int, ollama_url: str, model: str, initial_prompt: s
 
             with shared_state['lock']:
                 shared_state['latest_frame'] = frame
+                shared_state['frame_buffer'].append(frame)
                 display_text = shared_state['latest_status']
 
             if not headless:
@@ -620,6 +679,7 @@ def main(video_source: str | int, ollama_url: str, model: str, initial_prompt: s
             try:
                 while True:
                     cmd = command_queue.get_nowait()
+                    stop_speaking()  # barge-in: interrupt current speech on any new command
                     if cmd == "analyze_now":
                         force_analyze_event.set()
                         if not mute_flag.is_set():
