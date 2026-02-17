@@ -13,6 +13,7 @@ import sys
 import platform
 from collections import deque
 from datetime import datetime
+import signal
 
 
 def _detect_capabilities() -> dict:
@@ -49,9 +50,19 @@ def _frame_sharpness(frame) -> float:
     return cv2.Laplacian(gray, cv2.CV_64F).var()
 
 
+# --- Signal Handling for Forceful Exit ---
+def setup_signals(stop_event, voice_stop_func=None):
+    def handle_exit(sig, frame):
+        print("\n[SHUTDOWN] Exit signal received. Cleaning up threads...")
+        stop_event.set()
+        if voice_stop_func:
+            voice_stop_func() # If you use the speech_recognition background function
+        # We don't sys.exit here; we let the main loop break and clean up naturally      
+    signal.signal(signal.SIGINT, handle_exit)
+    signal.signal(signal.SIGTERM, handle_exit)
+
+
 def _build_gstreamer_pipeline(source, width: int, height: int) -> str | None:
-    """Build a GStreamer pipeline string for hardware-accelerated capture on Jetson.
-    Returns None if the source type is unrecognised."""
     src = str(source)
     if src.startswith("rtsp://"):
         return (
@@ -60,18 +71,13 @@ def _build_gstreamer_pipeline(source, width: int, height: int) -> str | None:
             f"nvvidconv ! video/x-raw,format=BGRx,width={width},height={height} ! "
             "videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=0"
         )
-    if src.startswith(("http://", "https://")):
-        return (
-            f"souphttpsrc location={src} ! decodebin ! nvvidconv ! "
-            f"video/x-raw,format=BGRx,width={width},height={height} ! "
-            "videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=0"
-        )
     if src.isdigit():
         return (
-            f"v4l2src device=/dev/video{src} ! "
-            f"video/x-raw,framerate=30/1 ! nvvidconv ! "
-            f"video/x-raw,format=BGRx,width={width},height={height} ! "
-            "videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=0"
+            f"v4l2src device=/dev/video{src} io-mode=2 ! "
+            f"image/jpeg, width={width}, height={height}, framerate=30/1 ! "
+            "jpegparse ! nvv4l2decoder mjpeg=1 ! "
+            "nvvidconv ! video/x-raw,format=BGRx ! "
+            "videoconvert ! video/x-raw,format=BGR ! appsink drop=1"
         )
     return None
 
@@ -231,14 +237,24 @@ def speak(text: str, piper_model: str | None = None):
 
 
 def get_ai_analysis(image_data: str, ollama_url: str, model: str, prompt: str, timeout: int) -> str | None:
-    """Sends image to Ollama API and returns response text."""
+    """Sends image to Ollama API and returns response text.
+    UPDATED: Now includes context limits and keep-alive to prevent Jetson crashes.
+    """
     try:
-        response = requests.post(ollama_url, json={
+        # CRITICAL FIX 1: Limit context window to 1024 tokens to save VRAM (avoids OOM).
+        # CRITICAL FIX 2: Set keep_alive to -1 to prevent model unloading/reloading loop.
+        payload = {
             "model": model,
             "prompt": prompt,
             "images": [image_data],
-            "stream": False
-        }, timeout=timeout)
+            "stream": False,
+            "keep_alive": -1,
+            "options": {
+                "num_ctx": 1024
+            }
+        }
+            
+        response = requests.post(ollama_url, json=payload, timeout=timeout)
         response.raise_for_status()
         return response.json().get('response')
     except requests.exceptions.RequestException as e:
@@ -423,21 +439,25 @@ def voice_listener(command_queue: queue.Queue, stop_event: threading.Event, vosk
 
     try:
         model = vosk.Model(abs_model_path)
-        rec = vosk.KaldiRecognizer(model, 16000)
+        rec = vosk.KaldiRecognizer(model, 48000)
         pa = pyaudio.PyAudio()
 
         try:
-            dev_info = pa.get_default_input_device_info()
+            # We explicitly want index 0 (CA Essential SP)
+            dev_info = pa.get_device_info_by_index(0)
             print(f"  Audio input device: {dev_info['name']}")
         except IOError:
-            print("Voice listener disabled: no audio input device found.", file=sys.stderr)
-            if sys.platform == "win32":
-                print("  Hint: Check Windows Settings > Privacy > Microphone.", file=sys.stderr)
+            print("Voice listener Error: Could not find Device Index 0", file=sys.stderr)
             pa.terminate()
             return
 
-        stream = pa.open(format=pyaudio.paInt16, channels=1, rate=16000,
-                         input=True, frames_per_buffer=8000)
+        # UPDATED: Force device_index=0 and rate=48000
+        stream = pa.open(format=pyaudio.paInt16, 
+                         channels=1, 
+                         rate=48000, 
+                         input=True, 
+                         input_device_index=0, 
+                         frames_per_buffer=8000)
         stream.start_stream()
     except OSError as e:
         print(f"Voice listener init failed (audio device): {e}", file=sys.stderr)
@@ -774,8 +794,9 @@ if __name__ == "__main__":
                         help="CLAHE contrast enhancement for dark scenes")
     parser.add_argument("--denoise", action="store_true",
                         help="Bilateral filter denoising (adds CPU load)")
-    parser.add_argument("--timeout", type=int, default=30,
-                        help="Ollama API call timeout in seconds (default: 30)")
+    # CRITICAL FIX 3: Increased default timeout from 30s to 300s (5 minutes) for Jetson
+    parser.add_argument("--timeout", type=int, default=300,
+                        help="Ollama API call timeout in seconds (default: 300)")
     parser.add_argument("--piper-model", type=str, default=None,
                         help="Path to piper .onnx model file for neural TTS. Falls back to espeak-ng if not set.")
     parser.add_argument("--memory-path", type=str, default=None,
