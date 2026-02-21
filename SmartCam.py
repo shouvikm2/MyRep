@@ -277,18 +277,19 @@ def _find_usb_camera() -> int:
     return 0
 
 
-def _build_gstreamer_pipeline(source, width: int, height: int) -> str | None:
+def _build_gstreamer_pipeline(source, width: int, height: int, flip: int = 2) -> str | None:
     src = str(source).lower()
     
     # CSI camera via nvarguscamerasrc
     if src.startswith("csi"):
         sensor_id = src.replace("csi", "")
         sensor_id = int(sensor_id) if sensor_id.isdigit() else 0
-        # 1280x720@30fps — matches IMX219 native mode; lower fps reduces NVMM buffer usage
+        # 1280x720@30fps — matches IMX219 native mode
+        # flip-method: 0=none, 2=rotate180 (standard mount), 4=hflip, 6=vflip
         return (
             f"nvarguscamerasrc sensor-id={sensor_id} "
             f"! video/x-raw(memory:NVMM),width=1280,height=720,framerate=30/1,format=NV12 "
-            f"! nvvidconv flip-method=0 "
+            f"! nvvidconv flip-method={flip} "
             f"! video/x-raw,width={width},height={height},format=BGRx "
             f"! videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=0"
         )
@@ -903,7 +904,7 @@ def start_recording(record_dir: str, resolution: tuple) -> cv2.VideoWriter:
     os.makedirs(record_dir, exist_ok=True)
     filename = os.path.join(record_dir, f"rec_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
     fourcc = cv2.VideoWriter.fourcc(*'mp4v')
-    writer = cv2.VideoWriter(filename, fourcc, 4.0, resolution)  # 4 FPS matches headless capture rate
+    writer = cv2.VideoWriter(filename, fourcc, 10.0, resolution)  # matches headless ~10 FPS capture
     print(f"[{time.strftime('%H:%M:%S')}] Recording started: {filename}")
     return writer
 
@@ -1051,7 +1052,8 @@ def main(video_source: str | int, ollama_url: str, model: str, initial_prompt: s
          interval: int, motion_threshold: int, headless: bool, enhance_video: bool,
          timeout: int, denoise: bool, piper_model: str | None,
          memory_path: str | None, zone: str, memory_context_n: int,
-         record_dir: str, vosk_model: str | None, num_gpu: int | None = None):
+         record_dir: str, vosk_model: str | None, num_gpu: int | None = None,
+         flip: int = 2):
     print("Starting SmartCam...")
     print(f" - Source: {video_source}")
     print(f" - Model: {model}")
@@ -1081,7 +1083,7 @@ def main(video_source: str | int, ollama_url: str, model: str, initial_prompt: s
     hw_resize = False
     is_csi = str(video_source).startswith('csi')
     if HW_CAPS['has_gstreamer'] and HW_CAPS['is_jetson']:
-        gst_pipe = _build_gstreamer_pipeline(video_source, resolution[0], resolution[1])
+        gst_pipe = _build_gstreamer_pipeline(video_source, resolution[0], resolution[1], flip=flip)
         if gst_pipe:
             cap = cv2.VideoCapture(gst_pipe, cv2.CAP_GSTREAMER)
             if cap.isOpened():
@@ -1184,7 +1186,7 @@ def main(video_source: str | int, ollama_url: str, model: str, initial_prompt: s
                 time.sleep(3)
                 # Rebuild GStreamer pipeline for CSI/RTSP/USB
                 if hw_resize and HW_CAPS['has_gstreamer']:
-                    gst_pipe = _build_gstreamer_pipeline(video_source, resolution[0], resolution[1])
+                    gst_pipe = _build_gstreamer_pipeline(video_source, resolution[0], resolution[1], flip=flip)
                     if gst_pipe:
                         cap = cv2.VideoCapture(gst_pipe, cv2.CAP_GSTREAMER)
                     else:
@@ -1399,6 +1401,9 @@ if __name__ == "__main__":
                         help="Number of model layers to put on GPU (rest go to CPU). "
                              "Auto-detected for Jetson if not set. Use 0 for full CPU, "
                              "or a low number (e.g. 15) to avoid CUDA OOM.")
+    parser.add_argument("--flip", type=int, default=2,
+                        help="CSI camera flip method: 0=none, 2=rotate180 (default, standard mount), "
+                             "4=hflip, 6=vflip. Only affects CSI cameras.")
 
     args = parser.parse_args()
 
@@ -1438,4 +1443,4 @@ if __name__ == "__main__":
     main(video_source, args.ollama_url, args.model, final_prompt, args.interval,
          args.motion_threshold, args.headless, args.enhance_video, args.timeout,
          args.denoise, args.piper_model, args.memory_path, args.zone, args.memory_context,
-         args.record_dir, args.vosk_model, num_gpu)
+         args.record_dir, args.vosk_model, num_gpu, flip=args.flip)
